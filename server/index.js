@@ -34,6 +34,8 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
+    surname TEXT NOT NULL DEFAULT '',
+    email TEXT NOT NULL DEFAULT '',
     username TEXT NOT NULL UNIQUE,
     password_salt TEXT NOT NULL,
     password_hash TEXT NOT NULL,
@@ -45,6 +47,8 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS customers (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
+    surname TEXT NOT NULL DEFAULT '',
+    address TEXT NOT NULL DEFAULT '',
     phone TEXT NOT NULL DEFAULT '',
     email TEXT NOT NULL DEFAULT '',
     member_number TEXT NOT NULL UNIQUE,
@@ -62,11 +66,28 @@ db.exec(`
     address TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
+  CREATE TABLE IF NOT EXISTS categories (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    description TEXT NOT NULL DEFAULT '',
+    active INTEGER NOT NULL DEFAULT 1
+  );
+  CREATE TABLE IF NOT EXISTS discounts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    code TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL UNIQUE,
+    percentage REAL NOT NULL CHECK (percentage >= 0 AND percentage <= 100),
+    conditions TEXT NOT NULL DEFAULT '',
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
   CREATE TABLE IF NOT EXISTS products (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
     brand TEXT NOT NULL DEFAULT '',
     category TEXT NOT NULL,
+    category_id INTEGER REFERENCES categories(id),
+    supplier_id INTEGER REFERENCES suppliers(id),
     description TEXT NOT NULL DEFAULT '',
     barcode TEXT NOT NULL UNIQUE,
     size TEXT NOT NULL DEFAULT 'Unitalla',
@@ -101,12 +122,22 @@ db.exec(`
     branch_id INTEGER NOT NULL REFERENCES branches(id),
     user_id INTEGER NOT NULL REFERENCES users(id),
     customer_id INTEGER REFERENCES customers(id),
+    discount_id INTEGER REFERENCES discounts(id),
     subtotal REAL NOT NULL,
     discount REAL NOT NULL DEFAULT 0,
     total REAL NOT NULL,
     payment_method TEXT NOT NULL CHECK (payment_method IN ('cash', 'card', 'transfer')),
     status TEXT NOT NULL DEFAULT 'completed' CHECK (status IN ('completed', 'cancelled', 'returned')),
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE TABLE IF NOT EXISTS payments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sale_id INTEGER NOT NULL REFERENCES sales(id),
+    amount REAL NOT NULL CHECK (amount >= 0),
+    payment_method TEXT NOT NULL CHECK (payment_method IN ('cash', 'card', 'transfer')),
+    reference TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    status TEXT NOT NULL DEFAULT 'completed' CHECK (status IN ('pending', 'completed', 'cancelled', 'refunded'))
   );
   CREATE TABLE IF NOT EXISTS sale_items (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -125,7 +156,13 @@ db.exec(`
     quantity INTEGER NOT NULL,
     amount REAL NOT NULL DEFAULT 0,
     reason TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'approved' CHECK (status IN ('pending', 'approved', 'rejected')),
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE TABLE IF NOT EXISTS product_discounts (
+    product_id INTEGER NOT NULL REFERENCES products(id),
+    discount_id INTEGER NOT NULL REFERENCES discounts(id),
+    PRIMARY KEY (product_id, discount_id)
   );
 `);
 
@@ -133,8 +170,34 @@ function ensureColumn(table, column, definition) {
   const columns = db.prepare(`PRAGMA table_info(${table})`).all();
   if (!columns.some((item) => item.name === column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${definition}`);
 }
-ensureColumn("inventory_movements", "supplier_id", "supplier_id INTEGER REFERENCES suppliers(id)");
-ensureColumn("returns", "amount", "amount REAL NOT NULL DEFAULT 0");
+db.exec(`
+  CREATE TABLE IF NOT EXISTS schema_migrations (
+    version INTEGER PRIMARY KEY,
+    description TEXT NOT NULL,
+    applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  )
+`);
+const migrateRelationalModel = db.transaction(() => {
+  if (db.prepare("SELECT 1 FROM schema_migrations WHERE version = 1").get()) return;
+  ensureColumn("users", "surname", "surname TEXT NOT NULL DEFAULT ''");
+  ensureColumn("users", "email", "email TEXT NOT NULL DEFAULT ''");
+  ensureColumn("customers", "surname", "surname TEXT NOT NULL DEFAULT ''");
+  ensureColumn("customers", "address", "address TEXT NOT NULL DEFAULT ''");
+  ensureColumn("products", "category_id", "category_id INTEGER REFERENCES categories(id)");
+  ensureColumn("products", "supplier_id", "supplier_id INTEGER REFERENCES suppliers(id)");
+  ensureColumn("sales", "discount_id", "discount_id INTEGER REFERENCES discounts(id)");
+  ensureColumn("inventory_movements", "supplier_id", "supplier_id INTEGER REFERENCES suppliers(id)");
+  ensureColumn("returns", "amount", "amount REAL NOT NULL DEFAULT 0");
+  ensureColumn("returns", "status", "status TEXT NOT NULL DEFAULT 'approved'");
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_products_category_id ON products(category_id);
+    CREATE INDEX IF NOT EXISTS idx_products_supplier_id ON products(supplier_id);
+    CREATE INDEX IF NOT EXISTS idx_payments_sale_id ON payments(sale_id);
+    CREATE INDEX IF NOT EXISTS idx_product_discounts_discount_id ON product_discounts(discount_id);
+  `);
+  db.prepare("INSERT INTO schema_migrations (version, description) VALUES (1, ?)").run("Relational UML model");
+});
+migrateRelationalModel();
 
 const passwordRecord = (password, salt = randomBytes(16).toString("hex")) => ({
   salt,
@@ -168,7 +231,7 @@ const seed = db.transaction(() => {
     ["Falda Celeste", "Lumière", "Faldas", "Falda midi plisada en tela suave.", "7501000000015", "S", "Lavanda", 530, 1150, 5, 0],
     ["Top Amélie", "Maison Femme", "Blusas", "Top de tirantes con detalle bordado.", "7501000000016", "M", "Rosa palo", 340, 790, 5, 0],
     ["Vestido Noa", "Lumière", "Vestidos", "Vestido camisero con cinturón incluido.", "7501000000017", "L", "Verde salvia", 760, 1690, 5, 0],
-    ["Conjunto Lingerie", "Maison Femme", "Lencería", "Conjunto delicado de dos piezas.", "7501000000018", "M", "Vino", 390, 890, 5, 1],
+    ["Cinturón", "Maison Femme", "Accesorios", "Cinturón versátil para complementar distintos estilos.", "7501000000018", "Unitalla", "Vino", 390, 890, 5, 0],
   ];
   for (const product of products) insertProduct.run(...product);
 
@@ -190,6 +253,30 @@ const seed = db.transaction(() => {
     .run("Moda & Estilo", "Distribuidora Moda", "722 555 0110", "pedidos@modaestilo.mx", "Toluca, Estado de México");
 });
 seed();
+
+const syncRelationalData = db.transaction(() => {
+  db.exec(`
+    INSERT OR IGNORE INTO categories (name)
+    SELECT DISTINCT TRIM(category) FROM products WHERE TRIM(category) <> '';
+    UPDATE products
+    SET category_id = (SELECT id FROM categories WHERE categories.name = TRIM(products.category))
+    WHERE category_id IS NULL;
+  `);
+  const insertDiscount = db.prepare(`
+    INSERT OR IGNORE INTO discounts (code, name, percentage, conditions)
+    VALUES (?, ?, ?, ?)
+  `);
+  insertDiscount.run("membership", "Membresía Bella", 20, "Cliente con membresía activa.");
+  insertDiscount.run("annual_spend", "Cliente frecuente", 30, "Compras completadas superiores a $20,000 MXN en los últimos doce meses.");
+  db.exec(`
+    INSERT INTO payments (sale_id, amount, payment_method, created_at, status)
+    SELECT s.id, s.total, s.payment_method, s.created_at,
+      CASE WHEN s.status = 'cancelled' THEN 'cancelled' ELSE 'completed' END
+    FROM sales s
+    WHERE NOT EXISTS (SELECT 1 FROM payments p WHERE p.sale_id = s.id);
+  `);
+});
+syncRelationalData();
 
 const app = express();
 app.disable("x-powered-by");
@@ -230,7 +317,7 @@ function auth(required = true) {
       return rejectSession(res, "Sesión no válida.");
     }
     if (!Number.isFinite(payload.exp) || payload.exp <= Date.now()) return rejectSession(res, "Tu sesión expiró. Inicia sesión de nuevo.");
-    const user = db.prepare("SELECT id, name, username, role, branch_id AS branchId FROM users WHERE id = ? AND active = 1").get(payload.id);
+    const user = db.prepare("SELECT id, TRIM(name || ' ' || surname) AS name, surname, email, username, role, branch_id AS branchId FROM users WHERE id = ? AND active = 1").get(payload.id);
     if (!user) {
       res.setHeader("Set-Cookie", `${cookieName}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0`);
       return rejectSession(res, "La cuenta ya no está activa.");
@@ -262,7 +349,7 @@ app.post("/api/login", (req, res) => {
     return res.status(401).json({ error: "Usuario o contraseña incorrectos." });
   }
   res.setHeader("Set-Cookie", `${cookieName}=${sign({ id: user.id, exp: Date.now() + 8 * 60 * 60 * 1000 })}; HttpOnly; SameSite=Strict; Path=/; Max-Age=28800${process.env.NODE_ENV === "production" ? "; Secure" : ""}`);
-  res.json({ user: { id: user.id, name: user.name, username: user.username, role: user.role, branchId: user.branch_id } });
+  res.json({ user: { id: user.id, name: `${user.name} ${user.surname}`.trim(), surname: user.surname, email: user.email, username: user.username, role: user.role, branchId: user.branch_id } });
 });
 app.post("/api/logout", auth(), (_req, res) => {
   res.setHeader("Set-Cookie", `${cookieName}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0`);
@@ -340,7 +427,8 @@ app.get("/api/dashboard", auth(), (req, res) => {
   `).get(branchId).total : null;
   const recent = canViewSales ? db.prepare(`
     SELECT s.id, s.total, s.payment_method AS paymentMethod, s.created_at AS createdAt,
-      c.name AS customer, u.name AS seller
+      TRIM(c.name || ' ' || c.surname) AS customer,
+      TRIM(u.name || ' ' || u.surname) AS seller
     FROM sales s LEFT JOIN customers c ON c.id = s.customer_id JOIN users u ON u.id = s.user_id
     WHERE s.branch_id = ? ORDER BY s.id DESC LIMIT 5
   `).all(branchId) : [];
@@ -358,7 +446,8 @@ app.get("/api/products", (req, res) => {
   const search = `%${String(req.query.search || "").trim()}%`;
   const costColumn = req.user.role === "admin" ? "p.cost" : "NULL";
   const products = db.prepare(`
-    SELECT p.id, p.name, p.brand, p.category, p.description, p.barcode, p.size, p.color,
+    SELECT p.id, p.name, p.brand, p.category, p.category_id AS categoryId, p.supplier_id AS supplierId,
+      p.description, p.barcode, p.size, p.color,
       ${costColumn} AS cost, p.price, p.stock_min AS stockMin, p.lingerie, p.active,
       COALESCE((SELECT quantity FROM inventory WHERE product_id = p.id AND branch_id = ?), 0) AS stock,
       COALESCE((SELECT SUM(quantity) FROM inventory WHERE product_id = p.id), 0) AS totalStock
@@ -370,14 +459,22 @@ app.get("/api/products", (req, res) => {
 });
 app.post("/api/products", auth(), requireAdmin, (req, res) => {
   const { name, category, barcode, size, color, price, cost = 0, brand = "", description = "", stock = 0, branchId, stockMin = 5, lingerie = false } = req.body || {};
+  const supplierIdValue = req.body?.supplierId;
+  const supplierId = supplierIdValue === undefined || supplierIdValue === null || supplierIdValue === "" ? null : Number(supplierIdValue);
+  const categoryName = String(category || "").trim();
   if (!String(name || "").trim() || !String(category || "").trim() || !String(barcode || "").trim() || !Number.isFinite(Number(price)) || Number(price) < 0 || !Number.isInteger(Number(stock)) || Number(stock) < 0 || !Number.isInteger(Number(stockMin)) || Number(stockMin) < 0) {
     return res.status(400).json({ error: "Completa nombre, categoría, código de barras, precio y existencias válidas." });
   }
+  if (supplierId !== null && (!Number.isInteger(supplierId) || !db.prepare("SELECT id FROM suppliers WHERE id = ?").get(supplierId))) {
+    return res.status(400).json({ error: "Selecciona un proveedor válido." });
+  }
   const addProduct = db.transaction(() => {
+    db.prepare("INSERT INTO categories (name) VALUES (?) ON CONFLICT(name) DO UPDATE SET active = 1").run(categoryName);
+    const categoryId = db.prepare("SELECT id FROM categories WHERE name = ?").get(categoryName).id;
     const result = db.prepare(`
-      INSERT INTO products (name, brand, category, description, barcode, size, color, cost, price, stock_min, lingerie)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(String(name).trim(), brand, category, description, String(barcode).trim(), size || "Unitalla", color || "Marfil", Number(cost) || 0, Number(price), Number(stockMin), lingerie ? 1 : 0);
+      INSERT INTO products (name, brand, category, category_id, supplier_id, description, barcode, size, color, cost, price, stock_min, lingerie)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(String(name).trim(), brand, categoryName, categoryId, supplierId, description, String(barcode).trim(), size || "Unitalla", color || "Marfil", Number(cost) || 0, Number(price), Number(stockMin), lingerie ? 1 : 0);
     for (const branch of db.prepare("SELECT id FROM branches WHERE active = 1").all()) {
       const quantity = branch.id === Number(branchId || req.user.branchId) ? Number(stock) : 0;
       db.prepare("INSERT INTO inventory (product_id, branch_id, quantity) VALUES (?, ?, ?)").run(result.lastInsertRowid, branch.id, quantity);
@@ -426,27 +523,33 @@ app.post("/api/inventory/movements", auth(), requireAdmin, (req, res) => {
 app.get("/api/customers", (req, res) => {
   const search = `%${String(req.query.search || "").trim()}%`;
   res.json(db.prepare(`
-    SELECT c.id, c.name, c.phone, c.email, c.member_number AS memberNumber, c.is_member AS isMember,
+    SELECT c.id, TRIM(c.name || ' ' || c.surname) AS name, c.surname, c.address, c.phone, c.email,
+      c.member_number AS memberNumber, c.is_member AS isMember,
       c.privacy_accepted AS privacyAccepted, c.promo_consent AS promoConsent,
       COALESCE(SUM(CASE WHEN s.status = 'completed' THEN s.total ELSE 0 END), 0) AS lifetimeSpend,
       COALESCE((SELECT SUM(s2.total) FROM sales s2
         WHERE s2.customer_id = c.id AND s2.status = 'completed'
           AND s2.created_at >= datetime('now', '-1 year')), 0) AS annualSpend
     FROM customers c LEFT JOIN sales s ON s.customer_id = c.id
-    WHERE c.name LIKE ? OR c.phone LIKE ? OR c.email LIKE ? OR c.member_number LIKE ?
+    WHERE TRIM(c.name || ' ' || c.surname) LIKE ? OR c.phone LIKE ? OR c.email LIKE ?
+      OR c.member_number LIKE ? OR c.address LIKE ?
     GROUP BY c.id ORDER BY c.name
-  `).all(search, search, search, search));
+  `).all(search, search, search, search, search));
 });
 app.post("/api/customers", auth(), (req, res) => {
-  const { name, phone = "", email = "", isMember = false, privacyAccepted = false, promoConsent = false } = req.body || {};
+  const { name, surname = "", address = "", phone = "", email = "", isMember = false, privacyAccepted = false, promoConsent = false } = req.body || {};
   if (!String(name || "").trim() || !privacyAccepted) return res.status(400).json({ error: "El nombre y la aceptación de privacidad son obligatorios." });
   const memberNumber = `BB-${Date.now().toString().slice(-8)}${randomBytes(1).toString("hex").toUpperCase()}`;
   try {
     const result = db.prepare(`
-      INSERT INTO customers (name, phone, email, member_number, is_member, privacy_accepted, promo_consent)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(String(name).trim(), String(phone).trim(), String(email).trim(), memberNumber, isMember ? 1 : 0, 1, promoConsent ? 1 : 0);
-    res.status(201).json(db.prepare("SELECT id, name, phone, email, member_number AS memberNumber, is_member AS isMember FROM customers WHERE id = ?").get(result.lastInsertRowid));
+      INSERT INTO customers (name, surname, address, phone, email, member_number, is_member, privacy_accepted, promo_consent)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(String(name).trim(), String(surname).trim(), String(address).trim(), String(phone).trim(), String(email).trim(), memberNumber, isMember ? 1 : 0, 1, promoConsent ? 1 : 0);
+    res.status(201).json(db.prepare(`
+      SELECT id, TRIM(name || ' ' || surname) AS name, surname, address, phone, email,
+        member_number AS memberNumber, is_member AS isMember
+      FROM customers WHERE id = ?
+    `).get(result.lastInsertRowid));
   } catch (error) {
     if (error.code === "SQLITE_CONSTRAINT_UNIQUE") return res.status(409).json({ error: "No se pudo generar un número de socio único. Intenta de nuevo." });
     throw error;
@@ -470,7 +573,9 @@ app.get("/api/sales", requireRole("admin", "cashier"), (req, res) => {
   if (req.user.role !== "admin" && branchId !== req.user.branchId) return res.status(403).json({ error: "Solo puedes consultar las ventas de tu sucursal." });
   res.json(db.prepare(`
     SELECT s.id, s.subtotal, s.discount, s.total, s.payment_method AS paymentMethod,
-      s.status, s.created_at AS createdAt, c.name AS customer, u.name AS seller,
+      s.status, s.created_at AS createdAt,
+      TRIM(c.name || ' ' || c.surname) AS customer,
+      TRIM(u.name || ' ' || u.surname) AS seller,
       (SELECT COUNT(*) FROM sale_items WHERE sale_id = s.id) AS itemCount
     FROM sales s LEFT JOIN customers c ON c.id = s.customer_id JOIN users u ON u.id = s.user_id
     WHERE s.branch_id = ? ORDER BY s.id DESC LIMIT 100
@@ -480,7 +585,8 @@ app.get("/api/sales/:id", requireAdmin, (req, res) => {
   const saleId = Number(req.params.id);
   const sale = db.prepare(`
     SELECT s.id, s.branch_id AS branchId, s.created_at AS createdAt, s.status,
-      c.name AS customer
+      s.discount_id AS discountId, s.subtotal, s.discount, s.total,
+      TRIM(c.name || ' ' || c.surname) AS customer
     FROM sales s LEFT JOIN customers c ON c.id = s.customer_id WHERE s.id = ?
   `).get(saleId);
   if (!sale) return res.status(404).json({ error: "No se encontró ese ticket." });
@@ -489,6 +595,10 @@ app.get("/api/sales/:id", requireAdmin, (req, res) => {
       COALESCE((SELECT SUM(r.quantity) FROM returns r WHERE r.sale_id = si.sale_id AND r.product_id = si.product_id), 0) AS returned
     FROM sale_items si JOIN products p ON p.id = si.product_id
     WHERE si.sale_id = ?
+  `).all(saleId);
+  sale.payments = db.prepare(`
+    SELECT id, amount, payment_method AS paymentMethod, reference, created_at AS createdAt, status
+    FROM payments WHERE sale_id = ? ORDER BY id
   `).all(saleId);
   res.json(sale);
 });
@@ -502,7 +612,7 @@ app.post("/api/sales", auth(), (req, res) => {
   const items = Array.isArray(req.body?.items) ? req.body.items : [];
   if (!["cash", "card", "transfer"].includes(paymentMethod) || !items.length) return res.status(400).json({ error: "Agrega productos y selecciona una forma de pago." });
   const checkout = db.transaction(() => {
-    const customer = customerId ? db.prepare("SELECT * FROM customers WHERE id = ?").get(customerId) : null;
+    const customer = customerId ? db.prepare("SELECT *, TRIM(name || ' ' || surname) AS full_name FROM customers WHERE id = ?").get(customerId) : null;
     if (customerId && !customer) throw Object.assign(new Error("No se encontró el cliente seleccionado."), { status: 404 });
     let subtotal = 0;
     const normalizedItems = items.map((item) => {
@@ -517,21 +627,24 @@ app.post("/api/sales", auth(), (req, res) => {
       subtotal += product.price * quantity;
       return { ...product, quantity };
     });
-    let discountRate = 0;
+    let discountRule = null;
     if (customer) {
       const annualSpend = db.prepare(`
         SELECT COALESCE(SUM(total), 0) AS total FROM sales
         WHERE customer_id = ? AND status = 'completed' AND created_at >= datetime('now', '-1 year')
       `).get(customer.id).total;
-      if (annualSpend > 20000) discountRate = 0.3;
-      else if (customer.is_member) discountRate = 0.2;
+      const getDiscount = db.prepare("SELECT id, percentage FROM discounts WHERE code = ? AND active = 1");
+      if (annualSpend > 20000) discountRule = getDiscount.get("annual_spend") || null;
+      else if (customer.is_member) discountRule = getDiscount.get("membership") || null;
     }
+    const discountRate = discountRule ? discountRule.percentage / 100 : 0;
     const discount = Math.round(subtotal * discountRate * 100) / 100;
     const total = Math.max(0, Math.round((subtotal - discount) * 100) / 100);
     const sale = db.prepare(`
-      INSERT INTO sales (branch_id, user_id, customer_id, subtotal, discount, total, payment_method)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(branchId, req.user.id, customer?.id || null, subtotal, discount, total, paymentMethod);
+      INSERT INTO sales (branch_id, user_id, customer_id, discount_id, subtotal, discount, total, payment_method)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(branchId, req.user.id, customer?.id || null, discountRule?.id || null, subtotal, discount, total, paymentMethod);
+    db.prepare("INSERT INTO payments (sale_id, amount, payment_method) VALUES (?, ?, ?)").run(sale.lastInsertRowid, total, paymentMethod);
     const insertItem = db.prepare("INSERT INTO sale_items (sale_id, product_id, quantity, unit_price, subtotal) VALUES (?, ?, ?, ?, ?)");
     for (const item of normalizedItems) {
       insertItem.run(sale.lastInsertRowid, item.id, item.quantity, item.price, item.price * item.quantity);
@@ -541,7 +654,7 @@ app.post("/api/sales", auth(), (req, res) => {
     return {
       id: sale.lastInsertRowid, subtotal, discount, discountRate, total, paymentMethod,
       items: normalizedItems.map((item) => ({ id: item.id, name: item.name, quantity: item.quantity, price: item.price })),
-      customer: customer?.name || null, seller: req.user.name, createdAt: new Date().toISOString(),
+      customer: customer?.full_name || null, seller: req.user.name, createdAt: new Date().toISOString(),
     };
   });
   res.status(201).json(checkout());
@@ -563,6 +676,7 @@ app.post("/api/sales/:id/cancel", auth(), (req, res) => {
       db.prepare("INSERT INTO inventory_movements (product_id, branch_id, user_id, type, quantity, note) VALUES (?, ?, ?, 'adjustment', ?, ?)").run(item.product_id, sale.branch_id, req.user.id, item.quantity, `Cancelación venta #${saleId}: ${reason}`);
     }
     db.prepare("UPDATE sales SET status = 'cancelled' WHERE id = ?").run(saleId);
+    db.prepare("UPDATE payments SET status = 'cancelled' WHERE sale_id = ? AND status = 'completed'").run(saleId);
     return { ok: true };
   });
   res.json(cancelSale());
@@ -590,6 +704,8 @@ app.post("/api/returns", auth(), requireAdmin, (req, res) => {
       ? Math.round(sold.unit_price * quantity * (sale.total / sale.subtotal) * 100) / 100
       : 0;
     db.prepare("INSERT INTO returns (sale_id, product_id, branch_id, user_id, quantity, amount, reason) VALUES (?, ?, ?, ?, ?, ?, ?)").run(saleId, productId, sale.branch_id, req.user.id, quantity, amount, reason);
+    const refundedAmount = db.prepare("SELECT COALESCE(SUM(amount), 0) AS total FROM returns WHERE sale_id = ?").get(saleId).total;
+    if (refundedAmount >= sale.total) db.prepare("UPDATE payments SET status = 'refunded' WHERE sale_id = ?").run(saleId);
     db.prepare("UPDATE inventory SET quantity = quantity + ?, updated_at = CURRENT_TIMESTAMP WHERE product_id = ? AND branch_id = ?").run(quantity, productId, sale.branch_id);
     db.prepare("INSERT INTO inventory_movements (product_id, branch_id, user_id, type, quantity, note) VALUES (?, ?, ?, 'return', ?, ?)").run(productId, sale.branch_id, req.user.id, quantity, `Devolución venta #${saleId}`);
     return { ok: true };
@@ -621,7 +737,7 @@ app.get("/api/reports", requireRole("admin", "cashier"), (req, res) => {
     GROUP BY date(created_at) ORDER BY date DESC
   `).all(branchId, month);
   const sellers = db.prepare(`
-    SELECT u.name, COUNT(s.id) AS sales, COALESCE(SUM(s.total), 0) AS total
+    SELECT TRIM(u.name || ' ' || u.surname) AS name, COUNT(s.id) AS sales, COALESCE(SUM(s.total), 0) AS total
     FROM users u LEFT JOIN sales s ON s.user_id = u.id AND s.branch_id = ?
       AND s.status = 'completed' AND strftime('%Y-%m', s.created_at) = ?
     GROUP BY u.id ORDER BY total DESC
@@ -636,12 +752,13 @@ app.get("/api/reports", requireRole("admin", "cashier"), (req, res) => {
 
 app.get("/api/users", auth(), requireAdmin, (_req, res) => {
   res.json(db.prepare(`
-    SELECT u.id, u.name, u.username, u.role, u.active, b.name AS branch
+    SELECT u.id, TRIM(u.name || ' ' || u.surname) AS name, u.surname, u.email,
+      u.username, u.role, u.active, b.name AS branch
     FROM users u LEFT JOIN branches b ON b.id = u.branch_id ORDER BY u.id
   `).all());
 });
 app.post("/api/users", auth(), requireAdmin, (req, res) => {
-  const { name, username, password, role, branchId } = req.body || {};
+  const { name, surname = "", email = "", username, password, role, branchId } = req.body || {};
   if (!String(name || "").trim() || !/^[a-zA-Z0-9._-]{3,30}$/.test(String(username || ""))) {
     return res.status(400).json({ error: "Indica un nombre y un usuario de 3 a 30 caracteres (letras, números, punto, guion o guion bajo)." });
   }
@@ -652,11 +769,12 @@ app.post("/api/users", auth(), requireAdmin, (req, res) => {
   const credentials = passwordRecord(password);
   try {
     const result = db.prepare(`
-      INSERT INTO users (name, username, password_salt, password_hash, role, branch_id)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `).run(String(name).trim(), username, credentials.salt, credentials.hash, role, branch.id);
+      INSERT INTO users (name, surname, email, username, password_salt, password_hash, role, branch_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(String(name).trim(), String(surname).trim(), String(email).trim(), username, credentials.salt, credentials.hash, role, branch.id);
     res.status(201).json(db.prepare(`
-      SELECT u.id, u.name, u.username, u.role, u.active, b.name AS branch
+      SELECT u.id, TRIM(u.name || ' ' || u.surname) AS name, u.surname, u.email,
+        u.username, u.role, u.active, b.name AS branch
       FROM users u LEFT JOIN branches b ON b.id = u.branch_id WHERE u.id = ?
     `).get(result.lastInsertRowid));
   } catch (error) {
