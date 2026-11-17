@@ -1,40 +1,57 @@
-# Bella Boutique POS
+# Bella Boutique · Sistema de punto de venta
 
-Sistema de punto de venta responsive para Bella Boutique, respaldado por SQLite.
+Aplicación web responsive para el punto de venta de Bella Boutique. La API guarda usuarios, sucursales, prendas, existencias, clientas, proveedores, ventas, pagos y devoluciones en una base SQLite persistente.
 
-## Desarrollo
+## Requisitos
 
-Requiere Node.js 22.13 o posterior.
+- Node.js 22.13 o posterior (utiliza el módulo SQLite integrado en Node)
+- npm
+
+## Iniciar en desarrollo
 
 ```powershell
 npm install
 npm run dev
 ```
 
-Abre `http://localhost:5173`. El comando inicia la interfaz y la API; los datos se guardan en `data/bella-boutique.db`.
+Abre la dirección local indicada por Vite (normalmente `http://localhost:5173`). La API usa el puerto `3000` y Vite redirige `/api` al servidor local.
 
-Acceso de demostración: `admin` / `Bella2026!`. Cambia la contraseña en **Equipo → Cambiar contraseña** antes de utilizar información real.
+El catálogo público está disponible en `http://localhost:5173/catalogo`. Después de iniciar sesión, la pantalla **Inicio** muestra los accesos disponibles para cada perfil. Administración tiene acceso a todos los módulos; Caja puede usar ventas, clientes y reportes; Ventas puede consultar productos e inventario y atender ventas y clientes. Administración es el único perfil que puede acceder a proveedores, usuarios, documentación del proyecto y su PDF original.
 
-También se crea un respaldo diario de SQLite en `data/backups`. El catálogo adaptable a celulares y tabletas está disponible sin iniciar sesión en `http://localhost:5173/catalogo`.
+| Perfil | Accesos principales |
+| --- | --- |
+| Administración | Todos los módulos, configuración, equipo y documentación |
+| Caja | Punto de venta, ventas, clientes y reportes de su sucursal |
+| Ventas | Punto de venta, productos, inventario de consulta y clientes |
+| Todos | Catálogo digital público |
 
-## Perfiles de acceso
+La sección **Equipo** permite a Administración desactivar o reactivar cuentas. Una cuenta desactivada no puede iniciar sesión y sus sesiones abiertas quedan bloqueadas; no se permite desactivar la cuenta propia ni la última cuenta de administración activa. La sección **Proyecto** reúne la planificación, el cuestionario, el cronograma, el presupuesto, los requisitos y la lista de cotejo. El PDF original se conserva en `documents/` y se sirve solo a cuentas de administración.
 
-- **Administración:** acceso completo a las sucursales, catálogo, inventario, proveedores y surtidos, clientas, devoluciones/cambios, caja, equipo y reportes.
-- **Cajero:** ventas y tickets de su sucursal, apertura/cierre y movimientos de caja, consulta de productos e inventario, clientas y cancelación de sus ventas. No puede administrar productos, proveedores, usuarios ni reportes.
-- **Vendedor:** punto de venta y consulta de productos/disponibilidad. No puede abrir caja, consultar el historial de ventas ni acceder a datos de contacto de clientas.
+## Accesos iniciales
 
-Todos pueden cambiar su propia contraseña desde **Equipo**. Los permisos se validan en la API, además de ocultar las pantallas no autorizadas.
-Solo la cuenta principal (`admin`) puede agregar cuentas. Esta cuenta no se puede desactivar ni eliminar.
+| Perfil | Usuario | Contraseña |
+| --- | --- | --- |
+| Administración | `admin` | `Bella2026!` |
+| Caja | `caja` | `Bella2026!` |
+| Ventas | `ventas` | `Bella2026!` |
 
-En una base nueva se crean seis cuentas de demostración (`admin`, `caja`, `ventas-centro`, `caja-norte`, `ventas`, `ventas-norte2`); todas usan inicialmente `Bella2026!`. Cambia esas contraseñas desde el sistema.
+Los accesos se crean al iniciar la base por primera vez. Cambia las contraseñas de prueba desde **Equipo → Cambiar contraseña** antes de usar la aplicación con información real. Las cuentas de prueba son solo para desarrollo.
 
-## Producción
+## Base de datos
+
+El archivo se crea automáticamente en `data/bella-boutique.db`; conserva la información al reiniciar el servidor. Para guardarlo en otra ubicación puedes definir `DB_PATH` o `DATA_DIRECTORY`.
+
+El sistema viene precargado con dos sucursales, prendas de ejemplo, dos clientas, un proveedor y tres cuentas de prueba. Las ventas reducen las existencias dentro de una transacción; las cancelaciones válidas y devoluciones autorizadas las reintegran y se conservan en el historial. Las devoluciones requieren etiquetas intactas, prenda sin uso, se limitan a 15 días y excluyen lencería. Las socias reciben 20% de descuento y las clientas que superen $20,000 MXN en ventas completadas durante los últimos doce meses reciben 30% (se aplica un solo descuento, el mayor que corresponda).
+
+## Ejecutar como sitio compilado
 
 ```powershell
 npm run build
 npm start
 ```
 
-Abre `http://localhost:3000`. Define `SESSION_SECRET` y habilita HTTPS en producción.
+El servidor entrega el sitio compilado y la API desde `http://localhost:3000`. Para un despliegue en red, define `SESSION_SECRET` con un secreto aleatorio de al menos 32 bytes y protege el servidor con HTTPS.
 
-Para compartir datos entre las dos sucursales, ambas deben conectarse a una única instancia del servidor. No compartas el archivo SQLite directamente por una unidad de red.
+## Alcance de SQLite local
+
+Esta configuración mantiene la base en el equipo/servidor donde se ejecuta la aplicación. Para que las dos sucursales vean los mismos datos, ambas deben acceder a una misma instancia del servidor, alojada en una red común o en línea. No expongas directamente el archivo SQLite a través de una carpeta compartida; para operar tiendas remotas con alta disponibilidad conviene migrar a PostgreSQL administrado.
